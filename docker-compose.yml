@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: queueflow-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: queueflow
+      POSTGRES_PASSWORD: queueflow_password
+      POSTGRES_DB: queueflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U queueflow -d queueflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: queueflow-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: queueflow-backend
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://queueflow:queueflow_password@postgres:5432/queueflow
+      REDIS_URL: redis://redis:6379/0
+      EMBEDDED_WORKER: "false"
+      SECRET_KEY: "queueflow-production-secret-key-change-me"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: queueflow-worker-1
+    restart: always
+    command: ["python", "-m", "app.worker_main"]
+    environment:
+      DATABASE_URL: postgresql://queueflow:queueflow_password@postgres:5432/queueflow
+      REDIS_URL: redis://redis:6379/0
+      WORKER_ID: "worker-cluster-node-1"
+      QUEUES: "default,critical,low"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: queueflow-frontend
+    restart: always
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
